@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    android:title="@string/connector_prefs_title">
+
+    <CheckBoxPreference android:key="enable_connector"
+        android:title="@string/connector_prefs_enable" />
+
+</PreferenceScreen>

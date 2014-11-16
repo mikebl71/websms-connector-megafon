@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">WebSMS Connector: megafon</string>
+
+    <string name="connector_megafon_author">mikebl71 &lt;mikeblmail-websms@yahoo.ie&gt;</string>
+    <string name="connector_megafon_name">megafon</string>
+
+    <string name="connector_prefs_title">Preferences - megafon</string>
+    <string name="connector_prefs_enable">Enable megafon</string>
+
+    <string name="error_http">Error response from server: </string>
+    <string name="error_empty_response">Empty response from server</string>
+    <string name="error_unexpected_captcha_info">Unexpected captcha info format</string>
+    <string name="error_no_captcha_answer">No captcha answer provided</string>
+    <string name="error_no_rus_recipient">No recipient number starting with +7</string>
+    <string name="error_send">Failed to send message: </string>
+    <string name="error_send_unexpected">Failed to send message: Unexpected response</string>
+
+</resources>
