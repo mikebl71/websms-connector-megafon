@@ -1,8 +1,16 @@
-WebSMS Megafon Connector
-========================
+WebSMS Connector: Megafon
+=========================
 
-This is WebSMS Connector for Megafon.ru.
+This is a connector for the WebSMS android app.
+It sends SMS via sendsms.megafon.ru.
 
-You will need websms-api [1] to compile this code.
+You need WebSMS to use this app.
 
-[1] http://github.com/felixb/websms-api/
+Build
+=====
+
+Gradle handles the remote maven dependency for the WebSMS API automatically.
+
+Simply build the connector by running `./gradlew clean assemble` on Linux or `gradlew.bat clean assemble` on Windows.
+
+You can also import this project into Android Studio.
