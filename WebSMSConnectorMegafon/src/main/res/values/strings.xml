@@ -7,12 +7,23 @@
     <string name="connector_prefs_title">Preferences - megafon</string>
     <string name="connector_prefs_enable">Enable megafon</string>
 
-    <string name="error_http">Error response from server: </string>
-    <string name="error_empty_response">Empty response from server</string>
-    <string name="error_unexpected_captcha_info">Unexpected captcha info format</string>
-    <string name="error_no_captcha_answer">No captcha answer provided</string>
+    <string name="toast_sms_accepted">Message accepted</string>
+    <string name="toast_sms_enqueued">Message enqueued</string>
+    <string name="toast_sms_sent">Message sent</string>
+    <string name="toast_sms_delivered">Message delivered</string>
+
     <string name="error_no_rus_recipient">No recipient number starting with +7</string>
-    <string name="error_send">Failed to send message: </string>
-    <string name="error_send_unexpected">Failed to send message: Unexpected response</string>
+    <string name="error_no_captcha_answer">No captcha answer provided</string>
+    <string name="error_wrong_captcha">Wrong captcha answer</string>
+    <string name="error_sms_failed">Megafon failed to send message</string>
+
+    <string name="error_http">Error response from server: %s</string>
+    <string name="error_empty_response">Empty response from server</string>
+
+    <string name="error_unexpected_megafon_captcha_info">Unexpected server response (megafon captcha info)</string>
+    <string name="error_unexpected_google_captcha_info">Unexpected server response (google captcha info)</string>
+    <string name="error_unexpected_send_response">Unexpected server response (send)</string>
+    <string name="error_unexpected_status_response">Unexpected server response (status)</string>
+    <string name="error_unexpected_sms_status">Unexpected megafon sms status (%s)</string>
 
 </resources>

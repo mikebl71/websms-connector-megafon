@@ -6,18 +6,15 @@ import android.preference.PreferenceActivity;
 /**
  * Preferences.
  */
+@SuppressWarnings("deprecation")
 public final class Preferences extends PreferenceActivity {
 
-    /** Preference key: enabled. */
-    static final String PREFS_ENABLED = "enable_connector";
+    public static final String PREFS_ENABLED = "enable_connector";
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     protected void onCreate(final Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        this.addPreferencesFromResource(R.xml.prefs);
+        addPreferencesFromResource(R.xml.prefs);
     }
 
 }

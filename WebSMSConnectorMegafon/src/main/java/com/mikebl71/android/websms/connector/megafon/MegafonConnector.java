@@ -2,25 +2,13 @@ package com.mikebl71.android.websms.connector.megafon;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.TimeZone;
 
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
-import org.apache.http.cookie.Cookie;
-import org.apache.http.entity.mime.HttpMultipartMode;
-import org.apache.http.entity.mime.MultipartEntity;
-import org.apache.http.entity.mime.content.StringBody;
-import org.apache.http.impl.cookie.BasicClientCookie;
-import org.apache.http.impl.cookie.BasicClientCookie2;
 import org.apache.http.message.BasicHeader;
 import org.apache.http.message.BasicNameValuePair;
 
@@ -29,19 +17,18 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.drawable.BitmapDrawable;
+import android.os.Handler;
+import android.os.Looper;
 import android.preference.PreferenceManager;
 import android.text.TextUtils;
-import android.text.format.DateFormat;
-import de.ub0r.android.websms.connector.common.CharacterTable;
-import de.ub0r.android.websms.connector.common.CharacterTableSMSLengthCalculator;
+import android.widget.Toast;
+
 import de.ub0r.android.websms.connector.common.Connector;
 import de.ub0r.android.websms.connector.common.ConnectorCommand;
 import de.ub0r.android.websms.connector.common.ConnectorSpec;
 import de.ub0r.android.websms.connector.common.ConnectorSpec.SubConnectorSpec;
 import de.ub0r.android.websms.connector.common.Log;
 import de.ub0r.android.websms.connector.common.Utils;
-import de.ub0r.android.websms.connector.common.Utils.HttpOptions;
 import de.ub0r.android.websms.connector.common.WebSMSException;
 import de.ub0r.android.websms.connector.common.WebSMSNoNetworkException;
 
@@ -52,20 +39,21 @@ import de.ub0r.android.websms.connector.common.WebSMSNoNetworkException;
 public class MegafonConnector extends Connector {
 
     // Logging tag
-    private static final String TAG = "megafon";
-
-    // URLs
-    private static final String URL_HOME = "https://sendsms.megafon.ru/";
-    private static final String URL_CAPTCHA_INFO = "http://www.google.com/recaptcha/api/noscript?lang=ru&k=6Lc7XMUSAAAAAALuekCTAzdT5U0zeiEUQbTRZIBu";
-    private static final String URL_CAPTCHA_IMAGE_PREFIX = "http://www.google.com/recaptcha/api/image?c=";
-    private static final String URL_SEND = "https://sendsms.megafon.ru/sms.action";
-
-    // HTTP request properties
-    private static final String ENCODING = "UTF-8";
-    private static final String USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/37.0.2062.120 Chrome/37.0.2062.120 Safari/537.36";
+    public static final String TAG = "megafon";
 
     // Timeout for waiting a captcha answer from the user
-    private static final long CAPTCHA_ANSWER_TIMEOUT = 60000;
+    private static final long CAPTCHA_ANSWER_TIMEOUT_MS = 300000;
+
+    // Delay between status checks
+    private static final long STATUS_CHECK_DELAY_MS  = 10000;
+    // Max number of status checks
+    private static final int STATUS_CHECK_MAXCNT = 3;
+
+    private static final String SMS_STATUS_ACCEPTED  = "0";
+    private static final String SMS_STATUS_ENQUEUED  = "10";
+    private static final String SMS_STATUS_SENT      = "20";
+    private static final String SMS_STATUS_DELIVERED = "30";
+    private static final String SMS_STATUS_FAILED    = "-1";
 
     // Sync object for solving a captcha
     private static final Object CAPTCHA_SYNC = new Object();
@@ -76,7 +64,7 @@ public class MegafonConnector extends Connector {
         private String challenge;
         private Bitmap image;
         private String answer;
-    };
+    }
 
 
     /**
@@ -102,8 +90,8 @@ public class MegafonConnector extends Connector {
      */
     @Override
     public ConnectorSpec updateSpec(Context context, ConnectorSpec connectorSpec) {
-        final SharedPreferences p = PreferenceManager.getDefaultSharedPreferences(context);
-        if (p.getBoolean(Preferences.PREFS_ENABLED, false)) {
+        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        if (prefs.getBoolean(Preferences.PREFS_ENABLED, false)) {
             connectorSpec.setReady();
         } else {
             connectorSpec.setStatus(ConnectorSpec.STATUS_INACTIVE);
@@ -141,18 +129,60 @@ public class MegafonConnector extends Connector {
     private CaptchaInfo retrieveCaptcha(Context context) throws IOException {
         CaptchaInfo captchaInfo = new CaptchaInfo();
 
-        // retrieve captcha info
-        HttpResponse response = executeHttp(context, URL_CAPTCHA_INFO, null, URL_HOME);
+        // retrieve megafon captcha info
+        HttpResponse response = executeHttp(context,
+                "http://moscow.megafon.ru/api/sms/captcha",
+                null, "json",
+                "http://moscow.megafon.ru/help/info/message/");
 
         String responseText = Utils.stream2str(response.getEntity().getContent());
 
-        captchaInfo.challenge = getStringBetween(responseText, "id=\"recaptcha_challenge_field\" value=\"", "\"");
+        if (!responseText.contains("\"type\":\"recaptcha\"")) {
+            Log.e(TAG, "Unexpected megafon captcha response: " + responseText);
+            throw new WebSMSException(context, R.string.error_unexpected_megafon_captcha_info);
+        }
+
+        String captchaKey = getStringBetween(responseText, "\"pub\":\"", "\"");
+        if (TextUtils.isEmpty(captchaKey)) {
+            Log.e(TAG, "Unexpected megafon captcha response: " + responseText);
+            throw new WebSMSException(context, R.string.error_unexpected_megafon_captcha_info);
+        }
+
+        // retrieve google captcha info
+        response = executeHttp(context,
+                "http://www.google.com/recaptcha/api/challenge?k=" + captchaKey + "&ajax=1&cachestop=0.08925109167881884",
+                null, "json",
+                "http://moscow.megafon.ru/help/info/message/");
+
+        responseText = Utils.stream2str(response.getEntity().getContent());
+
+        captchaInfo.challenge = getStringBetween(responseText, "challenge : '", "'");
         if (TextUtils.isEmpty(captchaInfo.challenge)) {
-            throw new WebSMSException(context, R.string.error_unexpected_captcha_info);
+            Log.e(TAG, "Unexpected google challenge response: " + responseText);
+            throw new WebSMSException(context, R.string.error_unexpected_google_captcha_info);
+        }
+
+        // reload (captcha is easier after reload)
+        response = executeHttp(context,
+                "http://www.google.com/recaptcha/api/reload?c=" + captchaInfo.challenge
+                        + "&k=" + captchaKey
+                        + "&reason=i&type=image&lang=en-GB",
+                null, "json",
+                "http://moscow.megafon.ru/help/info/message/");
+
+        responseText = Utils.stream2str(response.getEntity().getContent());
+
+        captchaInfo.challenge = getStringBetween(responseText, "Recaptcha.finish_reload('", "'");
+        if (TextUtils.isEmpty(captchaInfo.challenge)) {
+            Log.e(TAG, "Unexpected google reload response: " + responseText);
+            throw new WebSMSException(context, R.string.error_unexpected_google_captcha_info);
         }
 
         // retrieve captcha image
-        response = executeHttp(context, URL_CAPTCHA_IMAGE_PREFIX + captchaInfo.challenge, null, URL_HOME);
+        response = executeHttp(context,
+                "https://www.google.com/recaptcha/api/image?c=" + captchaInfo.challenge,
+                null, "image",
+                "http://moscow.megafon.ru/help/info/message/");
 
         HttpEntity responseEntity = response.getEntity();
         InputStream inputStream = null;
@@ -178,7 +208,7 @@ public class MegafonConnector extends Connector {
 
         try {
             synchronized (CAPTCHA_SYNC) {
-                CAPTCHA_SYNC.wait(CAPTCHA_ANSWER_TIMEOUT);
+                CAPTCHA_SYNC.wait(CAPTCHA_ANSWER_TIMEOUT_MS);
             }
         } catch (InterruptedException e) {
         }
@@ -191,34 +221,79 @@ public class MegafonConnector extends Connector {
     }
 
     private void sendMessage(Context context, ConnectorCommand command, CaptchaInfo captchaInfo) throws IOException {
+        // send message text
         List<BasicNameValuePair> postData = new ArrayList<BasicNameValuePair>();
-        postData.add(new BasicNameValuePair("charcheck", "йцукен"));
-        postData.add(new BasicNameValuePair("lang", ""));
         postData.add(new BasicNameValuePair("addr", getRecipient(context, command)));
         postData.add(new BasicNameValuePair("message", command.getText()));
-
-        Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("GMT+3"));
-        postData.add(new BasicNameValuePair("send_day", String.format("%02d", cal.get(Calendar.DATE))));
-        postData.add(new BasicNameValuePair("send_month", String.format("%02d", cal.get(Calendar.MONTH) + 1)));
-        postData.add(new BasicNameValuePair("send_hour", Integer.toString(cal.get(Calendar.HOUR_OF_DAY))));
-        postData.add(new BasicNameValuePair("send_minute", Integer.toString(cal.get(Calendar.MINUTE))));
-        postData.add(new BasicNameValuePair("send_year", Integer.toString(cal.get(Calendar.YEAR))));
-
         postData.add(new BasicNameValuePair("recaptcha_challenge_field", captchaInfo.challenge));
         postData.add(new BasicNameValuePair("recaptcha_response_field", captchaInfo.answer));
 
-        HttpResponse response = executeHttp(context, URL_SEND, postData, URL_HOME);
+        HttpResponse response = executeHttp(context,
+                "http://moscow.megafon.ru/api/sms/send",
+                postData, "json",
+                "http://moscow.megafon.ru/help/info/message/");
 
         String responseText = Utils.stream2str(response.getEntity().getContent());
 
-        String error = getStringBetween(responseText, "<h1 class=\"error\">", "</h1>").trim();
-        if (!TextUtils.isEmpty(error)) {
-            throw new WebSMSException(context, R.string.error_send, error);
+        String uniqueKey = getStringBetween(responseText, "\"unique_key\":\"", "\"");
+        if (TextUtils.isEmpty(uniqueKey)) {
+            if (responseText.contains("{\"errors\":[\"captcha\"]}")) {
+                throw new WebSMSException(context, R.string.error_wrong_captcha);
+            } else {
+                Log.e(TAG, "Unexpected send response: " + responseText);
+                throw new WebSMSException(context, R.string.error_unexpected_send_response);
+            }
         }
-        if (responseText.contains("link-check-status")) {
-            // accepted by Megafon
-        } else {
-            throw new WebSMSException(context, R.string.error_send_unexpected);
+        Log.d(TAG, "Message unique key: " + uniqueKey);
+
+        // retrieve status
+        String status = "";
+        for (int tryCnt = 0; tryCnt < STATUS_CHECK_MAXCNT; tryCnt++) {
+
+            sleep(STATUS_CHECK_DELAY_MS);
+
+            postData = new ArrayList<BasicNameValuePair>();
+            postData.add(new BasicNameValuePair("unique_key", uniqueKey));
+
+            response = executeHttp(context,
+                    "http://moscow.megafon.ru/api/sms/status",
+                    postData, "json",
+                    "http://moscow.megafon.ru/help/info/message/");
+
+            responseText = Utils.stream2str(response.getEntity().getContent());
+
+            status = getStringBetween(responseText, "\"status\":\"", "\"");
+
+            if (TextUtils.isEmpty(status)) {
+                Log.e(TAG, "Unexpected status response: " + responseText);
+                throw new WebSMSException(context, R.string.error_unexpected_status_response);
+
+            } else if (status.equals(SMS_STATUS_ACCEPTED)
+                    || status.equals(SMS_STATUS_ENQUEUED)
+                    || status.equals(SMS_STATUS_SENT)) {
+                continue;
+
+            } else if (status.equals(SMS_STATUS_DELIVERED)) {
+                break;
+
+            } else if (status.equals(SMS_STATUS_FAILED)) {
+                Log.e(TAG, "Send failure: " + responseText);
+                throw new WebSMSException(context, R.string.error_sms_failed);
+
+            } else {
+                Log.e(TAG, "Unexpected status response: " + responseText);
+                throw new WebSMSException(context.getString(R.string.error_unexpected_sms_status, status));
+            }
+        }
+
+        if (status.equals(SMS_STATUS_ACCEPTED)) {
+            showToast(context, R.string.toast_sms_accepted);
+        } else if (status.equals(SMS_STATUS_ENQUEUED)) {
+            showToast(context, R.string.toast_sms_enqueued);
+        } else if (status.equals(SMS_STATUS_SENT)) {
+            showToast(context, R.string.toast_sms_sent);
+        } else if (status.equals(SMS_STATUS_DELIVERED)) {
+            showToast(context, R.string.toast_sms_delivered);
         }
     }
 
@@ -250,39 +325,52 @@ public class MegafonConnector extends Connector {
         return "";
     }
 
-    private HttpResponse executeHttp(Context context, String url, List<BasicNameValuePair> postPairs, String referrer)
+    private void showToast(final Context ctx, final int stringRes) {
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            public void run() {
+                Toast.makeText(ctx, ctx.getString(stringRes), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void sleep(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (Exception ex) {
+        }
+    }
+
+    private HttpResponse executeHttp(Context context, String url, List<BasicNameValuePair> postPairs,
+                                     String type, String referrer)
             throws IOException {
-        HttpOptions options = new HttpOptions(ENCODING);
+
+        //Utils.setVerboseLog(true);
+        //java.util.logging.Logger.getLogger("org.apache.http.wire").setLevel(java.util.logging.Level.FINEST);
+        //  adb shell setprop log.tag.org.apache.http.wire VERBOSE
+
+        Utils.HttpOptions options = new Utils.HttpOptions("UTF-8");
         options.url = url;
-        options.userAgent = USER_AGENT;
+        options.userAgent = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:35.0) Gecko/20100101 Firefox/35.0";
         options.referer = referrer;
         options.trustAll = true;
-        options.postData = null;
+
+        options.headers = new ArrayList<Header>();
+        options.headers.add(new BasicHeader("Accept-Language", "en-US,en;q=0.5"));
 
         if (postPairs != null) {
-            MultipartEntity entity = new MultipartEntity(HttpMultipartMode.BROWSER_COMPATIBLE);
-            for (BasicNameValuePair nvp : postPairs) {
-                try {
-                    entity.addPart(nvp.getName(), new StringBody(nvp.getValue()));
-                } catch (UnsupportedEncodingException e) {
-                    throw new IllegalStateException();
-                }
-            }
-            options.postData = entity;
+            options.addFormParameter(postPairs);
+            options.headers.add(new BasicHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"));
         }
 
-        // apparently, google returns easier captchas if a 'NID' cookie is present
-        if (options.headers == null) {
-            options.headers = new ArrayList<Header>();
+        if (type.equals("json")) {
+            options.headers.add(new BasicHeader("Accept", "application/json, text/javascript, */*; q=0.01"));
+            options.headers.add(new BasicHeader("X-Requested-With", "XMLHttpRequest"));
         }
-        options.headers.add(new BasicHeader("Cookie", "NID=50=RbHwrmdgEAl6v3XPDKfJey5zpW7n84oRvsTZOK0LuYwW0m0UDFcPmts2HqKaZc2-Rdo7iLsrYKOUVKV4ztyb7JMDWavDVmvsyC2UldBcyFKsmyM_4Qhr761WpGHfoZPZ"));
 
         HttpResponse response = Utils.getHttpClient(options);
 
         if (response.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
-            throw new WebSMSException(context,
-                    R.string.error_http,
-                    response.getStatusLine().getReasonPhrase());
+            throw new WebSMSException(context.getString(R.string.error_http, response.getStatusLine().getReasonPhrase()));
         }
 
         if (response.getEntity() == null) {
@@ -291,5 +379,4 @@ public class MegafonConnector extends Connector {
 
         return response;
     }
-
 }
